@@ -12,30 +12,30 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * Fetches the GitHub-hosted Users.json approval list and decides
- * whether the current device is allowed to use GhostType Pro.
+ * Fetches the Pastebin-hosted approval list and decides whether the
+ * current device is allowed to use GhostType Pro.
  *
  * The URL itself is XOR-encrypted with a key derived from the APK
  * signing cert (see [Obf]) — so a thief can't repackage the app to
- * point at their own approval server, and editing the GitHub URL
- * inside the binary makes decryption produce garbage and the fetch
- * fails. Both attack paths land the user on the permanent lock
- * screen.
+ * point at their own approval server, and editing the URL inside the
+ * binary makes decryption produce garbage and the fetch fails. Both
+ * attack paths land the user on the permanent lock screen.
+ *
+ * STRICT MODE (no bypass):
+ *   - Every check MUST successfully reach the approval server.
+ *   - If the URL is removed, returns 404, or is unreachable for ANY
+ *     reason, the app immediately blocks — no offline grace period.
+ *   - Approved state is cached for [CHECK_INTERVAL_MS] (1 h) only
+ *     to avoid hitting Pastebin on every keystroke. After 1 h the
+ *     device MUST re-verify online; failure = Blocked instantly.
+ *   - Blocked always wins over Approved.
  *
  * State machine:
  *   Approved        — id is on the approved list
- *   Blocked         — id is on the blocked list (kill-switch wins)
+ *   Blocked         — id is on the blocked/revoked list, OR server unreachable
  *   NotApproved     — id isn't on either list
- *   OfflineUnknown  — couldn't reach the server AND no fresh cache
- *
- * Caching rules (battery + network friendly):
- *   - Hits the network at most once per [CHECK_INTERVAL_MS] (6 h).
- *     If the last cached state was Approved, we return Approved
- *     without touching the network at all.
- *   - On any network failure, falls back to the cached state if the
- *     cache is < [MAX_OFFLINE_MS] (7 days) old. Otherwise OfflineUnknown.
- *   - Blocked always wins over Approved (so revocation can't be
- *     defeated by clearing app data).
+ *   GloballyDisabled — "app_enabled": false set by CHAND in the JSON
+ *   OfflineUnknown  — (legacy, no longer returned in strict mode)
  */
 object ApprovalGate {
 
@@ -53,8 +53,10 @@ object ApprovalGate {
     private const val K_LAST_CHECK = "last_check_at"
     private const val K_LAST_STATE = "last_state"
 
-    private const val CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L      // 6 h
-    private const val MAX_OFFLINE_MS    = 7L * 24L * 60L * 60L * 1000L // 7 days
+    // Strict mode: cache valid for 1 hour only. After that MUST re-verify online.
+    private const val CHECK_INTERVAL_MS = 1L * 60L * 60L * 1000L       // 1 h
+    // No offline grace: if the server is unreachable after cache expires → Blocked.
+    private const val MAX_OFFLINE_MS    = CHECK_INTERVAL_MS             // same as check interval
 
     @Volatile private var http: OkHttpClient? = null
     private fun http(): OkHttpClient {
@@ -73,27 +75,34 @@ object ApprovalGate {
     /** Cheap synchronous read of the last cached gate decision. Used
      *  by the IME service (where blocking on the network is not OK)
      *  to decide between showing the keyboard and showing a lock
-     *  view. The actual network refresh happens from MainActivity. */
+     *  view. The actual network refresh happens from MainActivity.
+     *
+     *  STRICT MODE: cache is only valid within CHECK_INTERVAL_MS (1 h).
+     *  After that, treat as Blocked until a fresh online check succeeds. */
     fun cachedState(ctx: Context): State {
-        val name = prefs(ctx).getString(K_LAST_STATE, null)
-            ?: return State.OfflineUnknown("never_checked")
+        val p = prefs(ctx)
+        val name = p.getString(K_LAST_STATE, null)
+            ?: return State.Blocked  // never checked = blocked
+        // Cache expired → force a Blocked result so the app re-verifies.
+        val last = p.getLong(K_LAST_CHECK, 0L)
+        if (System.currentTimeMillis() - last >= CHECK_INTERVAL_MS) {
+            return State.Blocked
+        }
         return when (name) {
             "Approved"         -> State.Approved
             "Blocked"          -> State.Blocked
             "NotApproved"      -> State.NotApproved
             "GloballyDisabled" -> State.GloballyDisabled
-            else               -> State.OfflineUnknown("never_checked")
+            else               -> State.Blocked
         }
     }
 
     fun isApprovedCached(ctx: Context): Boolean {
-        val s = cachedState(ctx)
-        if (s !is State.Approved) return false
-        // An "Approved" cache also expires after 7 days offline so a
-        // device whose approval was revoked while it had no internet
-        // eventually gets locked out anyway.
-        val last = prefs(ctx).getLong(K_LAST_CHECK, 0L)
-        return System.currentTimeMillis() - last < MAX_OFFLINE_MS
+        // Strict: only return true if cache is fresh (within 1 h) AND Approved.
+        val p = prefs(ctx)
+        if (p.getString(K_LAST_STATE, null) != "Approved") return false
+        val last = p.getLong(K_LAST_CHECK, 0L)
+        return System.currentTimeMillis() - last < CHECK_INTERVAL_MS
     }
 
     /** Full evaluation. Hits the network unless a fresh cached
@@ -231,16 +240,19 @@ object ApprovalGate {
         }
     }
 
+    /**
+     * STRICT MODE fallback — called whenever the network fetch fails for
+     * any reason (no internet, 404, timeout, server removed, etc.).
+     *
+     * Rule: if the server is unreachable → Block immediately.
+     * No offline grace period. No cached-Approved bypass.
+     * The only exception is GloballyDisabled (already the harshest state).
+     */
     private fun fallback(p: SharedPreferences, now: Long, lastStateName: String?, why: String): State {
-        // Global kill-switch: no offline grace period — stays locked even without internet.
         if (lastStateName == "GloballyDisabled") return State.GloballyDisabled
-        val lastCheck = p.getLong(K_LAST_CHECK, 0L)
-        if (lastStateName == "Approved" && now - lastCheck < MAX_OFFLINE_MS) {
-            return State.Approved
-        }
-        if (lastStateName == "Blocked") return State.Blocked
-        if (lastStateName == "NotApproved") return State.NotApproved
-        return State.OfflineUnknown(why)
+        // All other failures → Blocked. No exceptions, no grace period.
+        // If Pastebin is removed or unreachable, the app stops working.
+        return State.Blocked
     }
 
     /** Map GitHub plan name → duration in ms (-1 = Lifetime). */
