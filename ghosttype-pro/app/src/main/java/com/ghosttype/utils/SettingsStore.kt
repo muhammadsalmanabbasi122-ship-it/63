@@ -152,6 +152,7 @@ object SettingsStore {
     const val KEY_GITHUB_APPROVED_PLAN  = "github_approved_plan"  // Plan name set by CHAND in GitHub JSON (blank = not set)
     const val KEY_REMOTE_APP_VERSION    = "remote_app_version"    // Latest version string from GitHub JSON (blank = not fetched yet)
     const val KEY_DOWNLOAD_URL          = "download_url"          // APK download URL from GitHub JSON (blank = not set)
+    const val KEY_UPDATE_SHOW_VERSION   = "update_show_version"   // Version number to display in ForceUpdate popup (blank = hide)
     const val KEY_DEVICE_RESET_TOKEN    = "device_reset_token"    // Random token that changes device ID on plan expiry
 
     fun getDeviceResetToken(ctx: Context): String {

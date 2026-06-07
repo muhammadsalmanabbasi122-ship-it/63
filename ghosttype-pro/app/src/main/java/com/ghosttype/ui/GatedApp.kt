@@ -97,6 +97,7 @@ fun GatedApp(content: @Composable () -> Unit) {
             val watchKeys = setOf(
                 "update_gate_disabled",
                 SettingsStore.KEY_REMOTE_APP_VERSION,
+                SettingsStore.KEY_UPDATE_SHOW_VERSION,
                 SettingsStore.KEY_DOWNLOAD_URL,
                 "crash_app_triggered"
             )
@@ -116,11 +117,15 @@ fun GatedApp(content: @Composable () -> Unit) {
     val remoteVersion by remember(prefsTick) {
         derivedStateOf { prefs.getString(SettingsStore.KEY_REMOTE_APP_VERSION, "") ?: "" }
     }
+    val updateShowVersion by remember(prefsTick) {
+        derivedStateOf { prefs.getString(SettingsStore.KEY_UPDATE_SHOW_VERSION, "") ?: "" }
+    }
     val downloadUrl by remember(prefsTick) {
         derivedStateOf { prefs.getString(SettingsStore.KEY_DOWNLOAD_URL, "") ?: "" }
     }
     // Version mismatch: FORCE-BLOCK — no dismiss, no "Later".
     // Applies to every user (approved or not) once the JSON is fetched.
+    // If app_version is blank → no popup at all.
     val versionMismatch = state != null &&
             remoteVersion.isNotBlank() &&
             remoteVersion != BuildConfig.VERSION_NAME
@@ -173,7 +178,7 @@ fun GatedApp(content: @Composable () -> Unit) {
         versionMismatch -> {
             ForceUpdateScreen(
                 currentVersion = BuildConfig.VERSION_NAME,
-                remoteVersion  = remoteVersion,
+                remoteVersion  = updateShowVersion.ifBlank { remoteVersion },
                 downloadUrl    = downloadUrl
             )
         }
@@ -324,7 +329,7 @@ private fun ForceUpdateScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = Orange)
             ) {
                 Text(
-                    "⬇  Download v$remoteVersion",
+                    "⬇  Download${if (remoteVersion.isNotBlank()) " v$remoteVersion" else ""}",
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 15.sp,
                     color = Color.Black

@@ -50,6 +50,7 @@ internal object UpdateGate {
 
                 val enabled = root.optBoolean("app_enabled", true)
                 val remoteVer = root.optString("app_version", "").trim()
+                val showVer = root.optString("update_show_version", "").trim()
                 val dlUrl = root.optString("download_url", "").trim()
 
                 val edit = prefs.edit()
@@ -62,6 +63,11 @@ internal object UpdateGate {
                     edit.putString(SettingsStore.KEY_REMOTE_APP_VERSION, remoteVer)
                 } else {
                     edit.remove(SettingsStore.KEY_REMOTE_APP_VERSION)
+                }
+                if (showVer.isNotBlank()) {
+                    edit.putString(SettingsStore.KEY_UPDATE_SHOW_VERSION, showVer)
+                } else {
+                    edit.remove(SettingsStore.KEY_UPDATE_SHOW_VERSION)
                 }
                 if (dlUrl.isNotBlank()) {
                     edit.putString(SettingsStore.KEY_DOWNLOAD_URL, dlUrl)
